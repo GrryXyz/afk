@@ -101,12 +101,13 @@ client.on(Events.InteractionCreate, async (i) => {
       return i.reply({ content: "❌ Masuk voice dulu", ephemeral: true });
 
     const connection = joinVoiceChannel({
-      channelId: vc.id,
-      guildId: i.guild.id,
-      adapterCreator: i.guild.voiceAdapterCreator,
-      selfMute: false, // 🎤 MIC ON
-      selfDeaf: true
-    });
+  channelId: vc.id,
+  guildId: i.guild.id,
+  adapterCreator: i.guild.voiceAdapterCreator,
+  selfMute: false, // 🎤 MIC ON
+  selfDeaf: true,
+  preferredEncryptionMode: "aead_xchacha20_poly1305_rtpsize"
+});
 
     connections.set(i.guild.id, connection);
     playSilentMicOn(i.guild.id, connection);
@@ -118,13 +119,15 @@ client.on(Events.InteractionCreate, async (i) => {
           entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
         ]);
       } catch {
-        const newConn = joinVoiceChannel({
-          channelId: vc.id,
-          guildId: i.guild.id,
-          adapterCreator: i.guild.voiceAdapterCreator,
-          selfMute: false,
-          selfDeaf: true
-        });
+        const connection = joinVoiceChannel({
+  channelId: vc.id,
+  guildId: i.guild.id,
+  adapterCreator: i.guild.voiceAdapterCreator,
+  selfMute: false, // 🎤 MIC ON
+  selfDeaf: true,
+  preferredEncryptionMode: "aead_xchacha20_poly1305_rtpsize"
+});
+
         connections.set(i.guild.id, newConn);
         playSilentMicOn(i.guild.id, newConn);
       }
