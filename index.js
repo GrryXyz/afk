@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const {
@@ -6,7 +5,9 @@ const {
   GatewayIntentBits,
   SlashCommandBuilder,
   REST,
-  Routes
+  Routes,
+  Events,
+  ActivityType
 } = require("discord.js");
 
 const {
@@ -31,24 +32,32 @@ const client = new Client({
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-let connection;
-let player;
+let connections = new Map(); // multi-server ready
+let player = createAudioPlayer();
 
+/* ================= GLOBAL SLASH COMMAND ================= */
 const commands = [
-  new SlashCommandBuilder().setName("join").setDescription("Bot join voice (AFK 24/7)"),
-  new SlashCommandBuilder().setName("leave").setDescription("Bot keluar dari voice")
-].map(c => c.toJSON());
+  new SlashCommandBuilder()
+    .setName("join")
+    .setDescription("Bot join voice (AFK 24/7 anti disconnect)"),
+  new SlashCommandBuilder()
+    .setName("leave")
+    .setDescription("Bot keluar dari voice")
+].map(cmd => cmd.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
 
 (async () => {
-  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-  console.log("Global command ready");
+  try {
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+    console.log("🌍 Global slash command registered (v15)");
+  } catch (e) {
+    console.error(e);
+  }
 })();
 
-function playSilent(conn) {
-  if (!player) player = createAudioPlayer();
-
+/* ================= SILENT AUDIO ================= */
+function playSilent(connection) {
   const ffmpeg = spawn("ffmpeg-static", [
     "-f", "lavfi",
     "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
@@ -58,43 +67,77 @@ function playSilent(conn) {
     "-"
   ]);
 
-  const resource = createAudioResource(ffmpeg.stdout, { inputType: StreamType.Raw });
-  player.play(resource);
-  conn.subscribe(player);
+  const resource = createAudioResource(ffmpeg.stdout, {
+    inputType: StreamType.Raw
+  });
 
-  player.on(AudioPlayerStatus.Idle, () => player.play(resource));
+  player.play(resource);
+  connection.subscribe(player);
+
+  player.on(AudioPlayerStatus.Idle, () => {
+    player.play(resource);
+  });
 }
 
-client.once("ready", () => {
-  console.log(`Online sebagai ${client.user.tag}`);
+/* ================= READY (V15 STYLE) ================= */
+client.once(Events.ClientReady, (c) => {
+  console.log(`🤖 Online sebagai ${c.user.tag}`);
+  c.user.setActivity("AFK Voice 24/7", { type: ActivityType.Watching });
 });
 
-client.on("interactionCreate", async (i) => {
-  if (!i.isChatInputCommand()) return;
+/* ================= INTERACTION ================= */
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  if (i.commandName === "join") {
-    const vc = i.member.voice.channel;
-    if (!vc) return i.reply({ content: "Masuk voice dulu", ephemeral: true });
+  /* ---- JOIN ---- */
+  if (interaction.commandName === "join") {
+    const vc = interaction.member.voice.channel;
+    if (!vc)
+      return interaction.reply({
+        content: "❌ Masuk voice dulu",
+        ephemeral: true
+      });
 
-    connection = joinVoiceChannel({
+    const connection = joinVoiceChannel({
       channelId: vc.id,
-      guildId: i.guild.id,
-      adapterCreator: i.guild.voiceAdapterCreator,
+      guildId: interaction.guild.id,
+      adapterCreator: interaction.guild.voiceAdapterCreator,
       selfMute: false,
       selfDeaf: true
     });
 
+    connections.set(interaction.guild.id, connection);
     playSilent(connection);
-    i.reply("Bot join voice (anti disconnect aktif)");
+
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
+        ]);
+      } catch {
+        connections.delete(interaction.guild.id);
+      }
+    });
+
+    interaction.reply("✅ Bot join voice (anti disconnect aktif)");
   }
 
-  if (i.commandName === "leave") {
-    if (!connection) return i.reply({ content: "Bot tidak di voice", ephemeral: true });
+  /* ---- LEAVE ---- */
+  if (interaction.commandName === "leave") {
+    const connection = connections.get(interaction.guild.id);
+    if (!connection)
+      return interaction.reply({
+        content: "❌ Bot tidak di voice",
+        ephemeral: true
+      });
+
     connection.destroy();
-    connection = null;
-    player = null;
-    i.reply("Bot keluar voice");
+    connections.delete(interaction.guild.id);
+
+    interaction.reply("👋 Bot keluar dari voice");
   }
 });
 
 client.login(TOKEN);
+
