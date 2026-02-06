@@ -21,8 +21,7 @@ const {
   NoSubscriberBehavior
 } = require("@discordjs/voice");
 
-const { spawn } = require("child_process");
-const ffmpegPath = require("ffmpeg-static");
+const { Readable } = require("stream");
 
 const client = new Client({
   intents: [
@@ -34,11 +33,10 @@ const client = new Client({
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 
-// simpan koneksi & player per server
 const connections = new Map();
 const players = new Map();
 
-/* ================= GLOBAL SLASH COMMAND ================= */
+/* ================= GLOBAL COMMAND ================= */
 const commands = [
   new SlashCommandBuilder()
     .setName("join")
@@ -49,20 +47,20 @@ const commands = [
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(TOKEN);
-
 (async () => {
-  try {
-    await rest.put(
-      Routes.applicationCommands(CLIENT_ID),
-      { body: commands }
-    );
-    console.log("🌍 Global command registered");
-  } catch (err) {
-    console.error(err);
-  }
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+  console.log("🌍 Global command ready");
 })();
 
-/* ================= SILENT AUDIO (MIC ON) ================= */
+/* ================= SILENT PCM STREAM ================= */
+function createSilentStream() {
+  return new Readable({
+    read() {
+      this.push(Buffer.alloc(3840)); // 20ms PCM silence
+    }
+  });
+}
+
 function playSilentMicOn(guildId, connection) {
   const player = createAudioPlayer({
     behaviors: {
@@ -72,33 +70,19 @@ function playSilentMicOn(guildId, connection) {
 
   players.set(guildId, player);
 
-  const ffmpeg = spawn(ffmpegPath, [
-    "-f", "lavfi",
-    "-i", "anullsrc=r=48000:cl=stereo",
-    "-ac", "2",
-    "-ar", "48000",
-    "-f", "s16le",
-    "-"
-  ]);
-
-  ffmpeg.on("error", (err) => {
-    console.error("❌ FFmpeg error:", err);
-  });
-
-  const resource = createAudioResource(ffmpeg.stdout, {
+  const resource = createAudioResource(createSilentStream(), {
     inputType: StreamType.Raw
   });
 
   player.play(resource);
   connection.subscribe(player);
 
-  // loop terus biar Discord anggap aktif
   player.on(AudioPlayerStatus.Idle, () => {
     player.play(resource);
   });
 }
 
-/* ================= READY (V15) ================= */
+/* ================= READY (V15, NO WARNING) ================= */
 client.once(Events.ClientReady, (c) => {
   console.log(`🤖 Online sebagai ${c.user.tag}`);
   c.user.setActivity("AFK Voice 24/7 🎤", {
@@ -114,10 +98,7 @@ client.on(Events.InteractionCreate, async (i) => {
   if (i.commandName === "join") {
     const vc = i.member.voice.channel;
     if (!vc)
-      return i.reply({
-        content: "❌ Masuk voice dulu",
-        ephemeral: true
-      });
+      return i.reply({ content: "❌ Masuk voice dulu", ephemeral: true });
 
     const connection = joinVoiceChannel({
       channelId: vc.id,
@@ -130,7 +111,6 @@ client.on(Events.InteractionCreate, async (i) => {
     connections.set(i.guild.id, connection);
     playSilentMicOn(i.guild.id, connection);
 
-    // 🔁 auto reconnect keras
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
         await Promise.race([
@@ -138,7 +118,6 @@ client.on(Events.InteractionCreate, async (i) => {
           entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
         ]);
       } catch {
-        console.log("🔁 Force rejoin voice...");
         const newConn = joinVoiceChannel({
           channelId: vc.id,
           guildId: i.guild.id,
@@ -151,17 +130,14 @@ client.on(Events.InteractionCreate, async (i) => {
       }
     });
 
-    i.reply("✅ Bot join voice (🎤 MIC ON • ANTI DISCONNECT)");
+    i.reply("✅ Bot join voice (🎤 MIC ON • SUPER STABLE)");
   }
 
   /* ===== LEAVE ===== */
   if (i.commandName === "leave") {
     const conn = connections.get(i.guild.id);
     if (!conn)
-      return i.reply({
-        content: "❌ Bot tidak di voice",
-        ephemeral: true
-      });
+      return i.reply({ content: "❌ Bot tidak di voice", ephemeral: true });
 
     conn.destroy();
     connections.delete(i.guild.id);
